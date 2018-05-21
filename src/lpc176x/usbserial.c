@@ -6,7 +6,6 @@
 
 #include <string.h> // memcpy
 #include "LPC17xx.h" // LPC_SC
-#include "board/irq.h" // irq_save
 #include "board/usb_cdc.h" // usb_notify_setup
 #include "byteorder.h" // cpu_to_le32
 #include "command.h" // output
@@ -31,6 +30,18 @@
 #define WR_EN (1<<1)
 
 static void
+usb_irq_disable(void)
+{
+    NVIC_DisableIRQ(USB_IRQn);
+}
+
+static void
+usb_irq_enable(void)
+{
+    NVIC_EnableIRQ(USB_IRQn);
+}
+
+static void
 usb_wait(uint32_t flag)
 {
     while (!(LPC_USB->USBDevIntSt & flag))
@@ -52,7 +63,7 @@ usb_wait(uint32_t flag)
 #define SIE_CMD_VALIDATE_BUFFER 0xFA
 
 static void
-_sie_cmd(uint32_t cmd)
+sie_cmd(uint32_t cmd)
 {
     LPC_USB->USBDevIntClr = CDFULL | CCEMPTY;
     LPC_USB->USBCmdCode = 0x00000500 | (cmd << 16);
@@ -62,45 +73,18 @@ _sie_cmd(uint32_t cmd)
 static void
 sie_cmd_write(uint32_t cmd, uint32_t data)
 {
-    irqstatus_t flag = irq_save();
-    _sie_cmd(cmd);
+    sie_cmd(cmd);
     LPC_USB->USBCmdCode = 0x00000100 | (data << 16);
     usb_wait(CCEMPTY);
-    irq_restore(flag);
 }
 
 static uint32_t
 sie_cmd_read(uint32_t cmd)
 {
-    irqstatus_t flag = irq_save();
-    _sie_cmd(cmd);
+    sie_cmd(cmd);
     LPC_USB->USBCmdCode = 0x00000200 | (cmd << 16);
     usb_wait(CDFULL);
-    uint32_t res = LPC_USB->USBCmdData;
-    irq_restore(flag);
-    return res;
-}
-
-static void
-sie_validate_buffer(uint32_t idx)
-{
-    irqstatus_t flag = irq_save();
-    _sie_cmd(SIE_CMD_SELECT | idx);
-    _sie_cmd(SIE_CMD_VALIDATE_BUFFER);
-    irq_restore(flag);
-}
-
-static uint32_t
-sie_clear_buffer(uint32_t idx)
-{
-    irqstatus_t flag = irq_save();
-    _sie_cmd(SIE_CMD_SELECT | idx);
-    _sie_cmd(SIE_CMD_CLEAR_BUFFER);
-    LPC_USB->USBCmdCode = 0x00000200 | (SIE_CMD_CLEAR_BUFFER << 16);
-    usb_wait(CDFULL);
-    uint32_t res = LPC_USB->USBCmdData;
-    irq_restore(flag);
-    return res;
+    return LPC_USB->USBCmdData;
 }
 
 static uint32_t
@@ -119,10 +103,13 @@ sie_select_and_clear(uint32_t idx)
 static int_fast8_t
 usb_write_packet(uint32_t ep, const void *data, uint_fast8_t len)
 {
+    usb_irq_disable();
     uint32_t sts = sie_cmd_read(SIE_CMD_SELECT | ep);
-    if (sts & 0x01)
+    if (sts & 0x01) {
         // Output buffers full
+        usb_irq_enable();
         return -1;
+    }
 
     LPC_USB->USBCtrl = WR_EN | ((ep/2) << 2);
     LPC_USB->USBTxPLen = len;
@@ -135,7 +122,8 @@ usb_write_packet(uint32_t ep, const void *data, uint_fast8_t len)
         data += sizeof(d);
         LPC_USB->USBTxData = cpu_to_le32(d);
     }
-    sie_validate_buffer(ep);
+    sie_cmd(SIE_CMD_VALIDATE_BUFFER);
+    usb_irq_enable();
 
     return len;
 }
@@ -143,10 +131,13 @@ usb_write_packet(uint32_t ep, const void *data, uint_fast8_t len)
 static int_fast8_t
 usb_read_packet(uint32_t ep, void *data, uint_fast8_t max_len)
 {
+    usb_irq_disable();
     uint32_t sts = sie_cmd_read(SIE_CMD_SELECT | ep);
-    if (!(sts & 0x01))
+    if (!(sts & 0x01)) {
         // No data available
+        usb_irq_enable();
         return -1;
+    }
 
     // Determine packet size
     LPC_USB->USBCtrl = RD_EN | ((ep/2) << 2);
@@ -170,7 +161,8 @@ usb_read_packet(uint32_t ep, void *data, uint_fast8_t max_len)
         xfer -= sizeof(d);
     }
     // Clear space for next packet
-    sts = sie_clear_buffer(ep);
+    sts = sie_cmd_read(SIE_CMD_CLEAR_BUFFER);
+    usb_irq_enable();
     if (sts & 0x01)
         // Packet overwritten
         return -1;
@@ -205,42 +197,47 @@ usb_send_setup(const void *data, uint_fast8_t len)
 void
 usb_set_stall(void)
 {
+    usb_irq_disable();
     sie_cmd_write(SIE_CMD_SET_ENDPOINT_STATUS | 0, (1<<7));
+    usb_irq_enable();
 }
 
 void
 usb_set_address(uint_fast8_t addr)
 {
+    usb_irq_disable();
     sie_cmd_write(SIE_CMD_SET_ADDRESS, addr | (1<<7));
+    usb_irq_enable();
     usb_send_setup(NULL, 0);
 }
 
 static void
 realize_endpoint(uint32_t idx, uint32_t packet_size)
 {
-    irqstatus_t flag = irq_save();
     LPC_USB->USBDevIntClr = EP_RLZED;
     LPC_USB->USBReEp |= 1<<idx;
     LPC_USB->USBEpInd = idx;
     LPC_USB->USBMaxPSize = packet_size;
     usb_wait(EP_RLZED);
     LPC_USB->USBEpIntEn |= 1<<idx;
-    irq_restore(flag);
     sie_cmd_write(SIE_CMD_SET_ENDPOINT_STATUS | idx, 0);
 }
 
 void
 usb_set_configure(void)
 {
+    usb_irq_disable();
     realize_endpoint(EP1IN, USB_CDC_EP_ACM_SIZE);
     realize_endpoint(EP2OUT, USB_CDC_EP_BULK_OUT_SIZE);
     realize_endpoint(EP5IN, USB_CDC_EP_BULK_IN_SIZE);
     sie_cmd_write(SIE_CMD_CONFIGURE, 1);
+    usb_irq_enable();
 }
 
 void
 usbserial_init(void)
 {
+    usb_irq_disable();
     // enable power
     LPC_SC->PCONP |= (1<<31);
     // enable clock
@@ -258,7 +255,7 @@ usbserial_init(void)
     // enable irqs
     LPC_USB->USBDevIntEn = DEV_STAT | EP_SLOW;
     NVIC_SetPriority(USB_IRQn, 1);
-    NVIC_EnableIRQ(USB_IRQn);
+    usb_irq_enable();
 }
 DECL_INIT(usbserial_init);
 
