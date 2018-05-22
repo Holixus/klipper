@@ -79,7 +79,7 @@ class ZTilt:
         positions = []
         for s, (x, y) in zip(self.z_steppers, self.z_positions):
             s.mcu_stepper.set_ignore_move(True)
-            stepper_offset = x*x_adjust + y*y_adjust + z_adjust
+            stepper_offset = -(x*x_adjust + y*y_adjust)
             positions.append((stepper_offset, s))
         # Move each z stepper (sorted from lowest to highest) until they match
         positions.sort()
@@ -95,6 +95,8 @@ class ZTilt:
         # Z should now be level - do final cleanup
         last_stepper_offset, last_stepper = positions[-1]
         last_stepper.mcu_stepper.set_ignore_move(False)
+        curpos[2] -= z_adjust
+        toolhead.set_position(curpos)
         self.gcode.reset_last_position()
 
 def load_config(config):
