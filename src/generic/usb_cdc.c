@@ -42,7 +42,7 @@ usb_bulk_in_task(void)
         return;
     uint_fast8_t max_tpos = (tpos > USB_CDC_EP_BULK_IN_SIZE
                              ? USB_CDC_EP_BULK_IN_SIZE : tpos);
-    uint_fast8_t ret = usb_send_bulk_in(transmit_buf, max_tpos);
+    int_fast8_t ret = usb_send_bulk_in(transmit_buf, max_tpos);
     if (ret <= 0)
         return;
     uint_fast8_t needcopy = tpos - ret;
@@ -407,7 +407,7 @@ static void
 usb_state_ready(void)
 {
     struct usb_ctrlrequest req;
-    int ret = usb_read_setup(&req, sizeof(req));
+    int_fast8_t ret = usb_read_setup(&req, sizeof(req));
     if (ret != sizeof(req))
         // XXX - should verify that packet was sent with a setup token
         return;
