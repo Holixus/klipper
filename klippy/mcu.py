@@ -79,10 +79,10 @@ class MCU_stepper:
         return int(mcu_pos - 0.5)
     def set_ignore_move(self, ignore_move):
         if ignore_move:
-            self.stepcompress_push_const = (lambda *args: 0)
+            self._stepcompress_push_const = (lambda *args: 0)
             self._stepcompress_push_delta = (lambda *args: 0)
         else:
-            self.stepcompress_push_const = self._ffi_lib.stepcompress_push_const
+            self._stepcompress_push_const = self._ffi_lib.stepcompress_push_const
             self._stepcompress_push_delta = self._ffi_lib.stepcompress_push_delta
     def note_homing_start(self, homing_clock):
         ret = self._ffi_lib.stepcompress_set_homing(
@@ -118,7 +118,7 @@ class MCU_stepper:
     def step_const(self, print_time, start_pos, dist, start_v, accel):
         inv_step_dist = self._inv_step_dist
         step_offset = self._commanded_pos - start_pos * inv_step_dist
-        count = self.stepcompress_push_const(
+        count = self._stepcompress_push_const(
             self._stepqueue, print_time, step_offset, dist * inv_step_dist,
             start_v * inv_step_dist, accel * inv_step_dist)
         if count == STEPCOMPRESS_ERROR_RET:
@@ -128,7 +128,7 @@ class MCU_stepper:
                    , height_base, startxy_d, arm_d, movez_r):
         inv_step_dist = self._inv_step_dist
         height = self._commanded_pos - height_base * inv_step_dist
-        count = self.stepcompress_push_delta(
+        count = self._stepcompress_push_delta(
             self._stepqueue, print_time, dist * inv_step_dist,
             start_v * inv_step_dist, accel * inv_step_dist,
             height, startxy_d * inv_step_dist, arm_d * inv_step_dist, movez_r)
